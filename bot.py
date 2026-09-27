@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -22,6 +24,25 @@ sent_suppression: set[str] = set()
 opted_out: set[str] = set()                     # merchant/customer ids that asked us to stop
 autoreply_count: dict[str, int] = {}            # merchant_id -> consecutive auto-replies
 SCOPES = ("category", "merchant", "customer", "trigger")
+
+
+async def _keep_awake():
+    """Render's free tier sleeps after 15 min without inbound traffic; ping our own public URL every 10 min."""
+    url = os.getenv("RENDER_EXTERNAL_URL")
+    if not url:
+        return
+    while True:
+        await asyncio.sleep(600)
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                await client.get(f"{url}/v1/healthz")
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+async def _startup():
+    asyncio.create_task(_keep_awake())
 
 
 def now_iso() -> str:
