@@ -111,10 +111,16 @@ def _template_name(kind: str, customer: bool) -> str:
     return f"{'merchant' if customer else 'vera'}_{re.sub(r'[^a-z0-9]+', '_', kind.lower())}_v1"
 
 
-async def _build_action(trg_id: str, trg: dict, merchant: dict, category: dict, customer: dict | None) -> dict:
+TICK_BUDGET = 7.0    # seconds; judge budget is 10s — always answer in time with the deterministic draft
+REPLY_BUDGET = 7.0
+
+
+async def _build_action(trg_id: str, trg: dict, merchant: dict, category: dict, customer: dict | None,
+                        deadline: float) -> dict:
     draft = composer.compose(category, merchant, trg, customer)
     try:
-        msg = await asyncio.wait_for(llm.polish(draft, category, merchant, trg, customer), timeout=12)
+        msg = await asyncio.wait_for(llm.polish(draft, category, merchant, trg, customer),
+                                     timeout=max(0.1, deadline - time.monotonic()))
     except Exception:
         msg = draft
     mid = merchant.get("merchant_id") or trg.get("merchant_id")
@@ -174,17 +180,17 @@ async def tick(request: Request):
         if len(chosen) >= 20:
             break
 
+    deadline = time.monotonic() + TICK_BUDGET
+
     async def build(c):
         _, trg_id, trg, merchant, category, customer, sk = c
         try:
-            return await _build_action(trg_id, trg, merchant, category, customer), sk
+            return await _build_action(trg_id, trg, merchant, category, customer, deadline), sk
         except Exception:
             return None, sk
 
-    try:
-        results = await asyncio.wait_for(asyncio.gather(*(build(c) for c in chosen)), timeout=24)
-    except asyncio.TimeoutError:
-        results = []
+    # each build falls back to its rule-based draft at the deadline, so gather never loses actions
+    results = await asyncio.gather(*(build(c) for c in chosen))
     actions = []
     for a, sk in results:
         if a:
@@ -353,7 +359,7 @@ async def reply(request: Request):
                "customer": ctx("customer", st.get("customer_id"))}
     out = None
     try:
-        out = await asyncio.wait_for(llm.reply(context, st["history"], msg), timeout=12)
+        out = await asyncio.wait_for(llm.reply(context, st["history"], msg), timeout=REPLY_BUDGET)
     except Exception:
         out = None
     if out:
