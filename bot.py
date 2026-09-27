@@ -40,6 +40,15 @@ async def _keep_awake():
             pass
 
 
+@app.middleware("http")
+async def _collapse_slashes(request: Request, call_next):
+    # tolerate "https://host/" + "/v1/..." -> "//v1/..."
+    path = request.scope["path"]
+    if "//" in path:
+        request.scope["path"] = re.sub(r"/{2,}", "/", path)
+    return await call_next(request)
+
+
 @app.on_event("startup")
 async def _startup():
     asyncio.create_task(_keep_awake())
